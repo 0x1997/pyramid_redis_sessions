@@ -1,24 +1,8 @@
-import os
-import cPickle
-import binascii
-from redis import Redis
-from functools import partial
-from pyramid.compat import text_
-from zope.interface import implementer
+from redis import StrictRedis
 
-from .util import (
-    get_unique_session_id,
-    refresh,
-    )
+from .session import RedisSession
+from .util import parse_settings, new_session_id, sign_session_id, unsign_session_id
 
-from .redissession import RedisSession
-
-from pyramid.interfaces import ISession
-
-from pyramid.session import (
-    signed_serialize,
-    signed_deserialize,
-    )
 
 def includeme(config): # pragma no cover
     """Allows users to call ``config.include('pyramid_redis_sessions')``."""
@@ -29,8 +13,7 @@ def session_factory_from_settings(settings): # pragma no cover
     """ Return a Pyramid session factory using Redis session settings from
     a Paste config file.
     """
-    from .util import _parse_settings
-    options = _parse_settings(settings)
+    options = parse_settings(settings)
     return RedisSessionFactory(**options)
 
 def RedisSessionFactory(
@@ -122,33 +105,23 @@ def RedisSessionFactory(
       ``unix_socket_path``
     """
 
-    def factory(request, new_session_id=get_unique_session_id):
+    def factory(request):
         # note: will raise ConnectionError if connection is not established
         redis = getattr(request.registry, '_redis_sessions', None)
         if redis is None: # pragma no cover
-            redis = Redis(host=host, port=port, db=db, password=password,
+            redis = StrictRedis(host=host, port=port, db=db, password=password,
                           socket_timeout=socket_timeout,
                           connection_pool=connection_pool, charset=charset,
                           errors=errors, unix_socket_path=unix_socket_path)
             setattr(request.registry, '_redis_sessions', redis)
 
-        cookieval = request.cookies.get(cookie_name)
-
-        session_id = None
-
-        if cookieval is not None:
-            try:
-                session_id = signed_deserialize(cookieval, secret)
-            except ValueError:
-                pass
-
-        def add_cookie(session_key):
+        def add_cookie(session_id):
             if not cookie_on_exception:
                 exc = getattr(request, 'exception', None)
                 if exc is None: # don't set cookie during exceptions
                     return
             def set_cookie_callback(request, response):
-                cookieval = signed_serialize(session_key, secret)
+                cookieval = sign_session_id(session_id, secret)
                 response.set_cookie(
                     cookie_name,
                     value = cookieval,
@@ -166,24 +139,23 @@ def RedisSessionFactory(
             request.add_response_callback(set_cookie_callback)
             return
 
-        if session_id is None:
-            session_id = new_session_id(redis, timeout)
-            add_cookie(session_id)
+        cookieval = request.cookies.get(cookie_name)
+        session_id = None
 
-        # attempt to find the session by session_id
-        session_check = redis.get(session_id)
+        if cookieval is not None:
+            try:
+                session_id = unsign_session_id(cookieval, secret)
+            except ValueError:
+                pass
 
-        # case: found session associated with session_id
-        if session_check is not None:
+        if session_id and redis.exists(session_id):
             session = RedisSession(redis, session_id, timeout, delete_cookie)
-
-        # case: session id obtained from cookie is not in Redis; begin anew
         else:
             new_id = new_session_id(redis, timeout)
             add_cookie(new_id)
             session = RedisSession(redis, new_id, timeout, delete_cookie)
             session._v_new = True
+
         return session
 
     return factory
-

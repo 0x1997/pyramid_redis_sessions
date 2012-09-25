@@ -34,6 +34,8 @@ setup(name='pyramid_redis_sessions',
       install_requires=[
         'redis>=2.4.11',
         'pyramid>=1.3',
+        'msgpack-python',
+        'PyCrypto',
         ],
       entry_points='',
       extras_require = {

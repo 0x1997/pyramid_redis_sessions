@@ -1,16 +1,11 @@
-import os
+import base64
 import time
-import cPickle
-import binascii
+from Crypto import Random
 from pyramid.compat import text_
+from pyramid.interfaces import ISession
 from zope.interface import implementer
 
-from .util import (
-    persist,
-    refresh,
-    )
-
-from pyramid.interfaces import ISession
+from .util import serialize, deserialize, persist, refresh
 
 @implementer(ISession)
 class RedisSession(object):
@@ -54,29 +49,28 @@ class RedisSession(object):
     objects. Default: ``cPickle.loads``.
     """
 
-    def __init__(self, redis, session_id, timeout, delete_cookie,
-                 encode=cPickle.dumps, decode=cPickle.loads):
+    def __init__(self, redis, session_id, timeout, delete_cookie):
         self.session_id = session_id
         self.redis = redis
-        self.timeout = timeout
-        self.encode = encode
-        self.decode = decode
+        self.managed_dict = self.from_redis()
+
+        self.default_timeout = timeout
+        self.timeout = 0 if 'on' in self.managed_dict else timeout
+
         self.delete_cookie = delete_cookie
         self.created = time.time()
-        self.managed_dict = self.from_redis()
 
     def to_redis(self):
         """ Encode this session's ``managed_dict`` for storage in Redis.
         Primarily used by the ``@persist`` decorator to save the current session
         state to Redis.
         """
-        return self.encode(self.managed_dict)
+        return serialize(self.managed_dict)
 
     def from_redis(self):
-        """ Get this session's pickled/encoded ``dict`` from Redis."""
+        """ Get this session's serialized ``dict`` from Redis."""
         persisted = self.redis.get(self.session_id)
-        decoded = self.decode(persisted)
-        return decoded
+        return deserialize(persisted)
 
     # dict modifying methods decorated with @persist
     @persist
@@ -134,7 +128,7 @@ class RedisSession(object):
 
     @refresh
     def has_key(self, key):
-        return self.managed_dict.has_key(key)
+        return key in self.managed_dict
 
     @refresh
     def values(self):
@@ -157,6 +151,17 @@ class RedisSession(object):
         """ Persists the working dict immediately with ``@persist``."""
         pass
 
+    @persist
+    def set_timeout(self):
+        self.timeout = self.default_timeout
+        if 'on' in self.managed_dict:
+            del self.managed_dict['on']
+
+    @persist
+    def dont_expire(self):
+        self.timeout = 0
+        self.managed_dict['on'] = True
+
     # session methods persist or refresh using above dict methods
     @property
     def new(self):
@@ -168,12 +173,12 @@ class RedisSession(object):
         self.delete_cookie()
 
     def new_csrf_token(self):
-        token = text_(binascii.hexlify(os.urandom(20)))
-        self['_csrft_'] = token
+        token = text_(base64.b64encode(Random.new().read(20)))
+        self['csrf'] = token
         return token
 
     def get_csrf_token(self):
-        token = self.get('_csrft_', None)
+        token = self.get('csrf', None)
         if token is None:
             token = self.new_csrf_token()
         else:
