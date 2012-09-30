@@ -64,7 +64,7 @@ def parse_settings(settings):
             options[param] = value
 
     # coerce ints
-    for i in ('port', 'db'):
+    for i in ('port', 'db', 'cookie_max_age'):
         if i in options:
             options[i] = int(options[i])
 
